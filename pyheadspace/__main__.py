@@ -2,6 +2,7 @@ import logging
 import os
 import re
 import json
+from time import sleep
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Union
 
@@ -130,30 +131,43 @@ def request_url(
         logger.info("Sending GET request to {}".format(url))
 
     response = session.get(url, params=params)
-    try:
-        response_js: dict = response.json()
-    except Exception as e:
-        logger.critical(f"status code {response.status_code}")
-        logger.critical(f"error: {e}")
-        console.print(f"status code {response.status_code}")
-        raise click.Abort()
-    if not response.ok:
-        if "errors" in response_js.keys():
-            errors = response_js["errors"]
-            logger.error(errors)
-            if response.status_code == 401:
-                console.print(
-                    "\n[red]Unautorized : Unable to login to headspace account[/red]"
-                )
-                console.print("Run [green]headspace login[/green] first.")
+    retry = 0
+    max_retry = 5
+    while True:   
+        try:
+            response_js: dict = response.json()
+        except Exception as e:
+            logger.critical(f"status code {response.status_code}")
+            logger.critical(f"error: {e}")
+            console.print(f"status code {response.status_code}")
+            retry =+ 1
+            if retry > max_retry:
+                raise click.Abort()
+            else:      
+                logger.warn(f"sleeping for {15*retry}s")          
+                sleep(15*retry)
+        if not response.ok:
+            if "errors" in response_js.keys():
+                errors = response_js["errors"]
+                logger.error(errors)
+                if response.status_code == 401:
+                    console.print(
+                        "\n[red]Unautorized : Unable to login to headspace account[/red]"
+                    )
+                    console.print("Run [green]headspace login[/green] first.")
+                    raise click.UsageError("Authentication issue")
+                else:
+                    console.print(errors)
             else:
-                console.print(errors)
-        else:
-            console.print(response_js)
-            logger.error(response_js)
-        raise click.UsageError(f"HTTP error: status-code = {response.status_code}")
-    return response_js
-
+                console.print(response_js)
+                logger.error(response_js)
+            retry += 1
+            if retry > max_retry:
+                raise click.UsageError("Too many errors, aborting.")
+            else:      
+                logger.warn(f"sleeping for {15*retry}s")          
+                sleep(15*retry)            
+        return response_js
 
 def round_off(time: Union[int, float]):
     orig_duration = time / 60000
