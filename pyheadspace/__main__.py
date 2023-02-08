@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import json
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Union
 
@@ -23,7 +24,7 @@ if not os.path.exists(BASEDIR):
     os.makedirs(BASEDIR)
 BEARER = os.path.abspath(os.path.join(BASEDIR, "bearer_id.txt"))
 
-AUDIO_URL = "https://api.prod.headspace.com/content/activities/{}"
+AUDIO_URL = "https://api.prod.headspace.com/content/v1/activities/{}"
 PACK_URL = "https://api.prod.headspace.com/content/activity-groups/{}"
 SIGN_URL = "https://api.prod.headspace.com/content/media-items/{}/make-signed-url"
 TECHNIQUE_URL = "https://api.prod.headspace.com/content/techniques/{}"
@@ -198,8 +199,9 @@ def get_pack_attributes(
             return
     # Logging
     logger.info(f"Downloading pack, name: {_pack_name}")
+    logger.debug("Raw response: {}".format(json.dumps(response)))
 
-    # Printing
+    # Printing    
     console.print("Pack metadata: ")
     console.print(f'[green]Name: [/green] {attributes["name"]}')
     console.print(f'[green]Description: [/green] {attributes["description"]}')
@@ -217,31 +219,80 @@ def get_pack_attributes(
 
 
 def get_signed_url(response: dict, duration: List[int]) -> dict:
-    data = response["included"]
     signed_links = {}
     av_duration = []
-    for item in data:
-        try:
-            name = response["data"]["attributes"]["name"]
-        except KeyError:
-            name = response["data"]["attributes"]["titleText"]
-        if item["type"] != "mediaItems":
-            continue
-        try:
-            duration_in_min = round_off(int(item["attributes"]["durationInMs"]))
-        except KeyError:
-            continue
-        av_duration.append(duration_in_min)
-        if duration_in_min not in duration:
-            continue
+    name = "NOT_FOUND"   
+    logger.debug("get_signed_url")
+    if "included" in response:
+        logger.debug("get_signed_url - included")
+        data = response["included"]
+        for item in data:
+            logger.debug("  ...")
+            try:
+                name = response["data"]["attributes"]["name"]
+            except KeyError:
+                name = response["data"]["attributes"]["titleText"]
+            logger.debug(f"  name: {name}")
+            if item["type"] != "mediaItems":
+                continue
+            try:
+                duration_in_min = round_off(int(item["attributes"]["durationInMs"]))
+            except KeyError:
+                continue
+            av_duration.append(duration_in_min)
+            logger.debug(f"  duration (min): {duration_in_min}")
+            if duration_in_min not in duration:
+                logger.debug(f"  skip, not in duration")
+                continue
 
-        sign_id = item["id"]
-        # Getting signed URL
-        direct_url = request_url(SIGN_URL, id=sign_id)["url"]
-        if len(duration) > 1:
-            name += f"({duration_in_min} minutes)"
+            sign_id = item["id"]
+            logger.debug(f"  sign_id): {sign_id}")
+            # Getting signed URL
+            logger.debug("   ...get signed url")
+            direct_url = request_url(SIGN_URL, id=sign_id)["url"]
+            logger.debug(f"  direct_url: {direct_url}")
+            if len(duration) > 1:
+                name += f"({duration_in_min} minutes)"
 
-        signed_links[name] = direct_url
+            signed_links[name] = direct_url
+    elif "variations" in response:
+        logger.debug("get_signed_url - variations")
+        try:
+            logger.debug("   ... find name")
+            name = response["name"]
+            logger.debug(f"   name: {name}")
+        except KeyError:
+            try:
+                logger.debug("   ... try trackingName?")
+                name = response["trackingName"]
+            except KeyError:
+                logger.debug("   ... can't find name")
+        for item in response["variations"]:
+            try:
+                duration_in_min = round_off(int(item["mediaItem"]["durationInMs"]))
+            except KeyError:
+                continue
+            av_duration.append(duration_in_min)
+            # author debug
+            try:
+                authorId = json.dumps(item["mediaItem"]["author"])
+                logger.debug(f"   author: {authorId}")
+            except:
+                logger.debug("   couldn't find author info")
+                continue
+            sign_id = item["mediaItem"]["id"]
+            logger.debug(f"  sign_id: {sign_id}")
+            logger.debug("   ...get signed url")
+            direct_url = request_url(SIGN_URL, id=sign_id)["url"]
+            logger.debug(f"  direct_url: {direct_url}")
+            if len(duration) > 1:
+                name += f"({duration_in_min} minutes)"
+                logger.debug(f"   name: {name}")
+            signed_links[name] = direct_url
+    else:
+        logger.debug("get_signed_url - unknown")
+        return
+    
     if len(signed_links) == 0:
         msg = (
             f"Cannot download {name}. This could be"
@@ -266,13 +317,18 @@ def download_pack_session(
     out: str,
     filename_suffix=None,
 ):
-    response = request_url(AUDIO_URL, id=id)
+    logger.info(f"download_pack_session, ID: {id} URL: {AUDIO_URL}")
+    response = request_url(AUDIO_URL, id=f"{id}")
+    logger.debug("download_pack_session, response: {}".format(json.dumps(response)))
 
     signed_url = get_signed_url(response, duration=duration)
-    for name, direct_url in signed_url.items():
-        if filename_suffix:
-            name += filename_suffix
-        download(direct_url, name, filename=name, pack_name=pack_name, out=out)
+    if signed_url:
+        for name, direct_url in signed_url.items():
+            if filename_suffix:
+                name += filename_suffix        
+            download(direct_url, name, filename=name, pack_name=pack_name, out=out)
+    else:
+        logger.error("nothing to download sadly... something broken")                
 
 
 def download_pack_techniques(
